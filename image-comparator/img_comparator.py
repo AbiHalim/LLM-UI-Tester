@@ -1,5 +1,7 @@
 import cv2, numpy as np
 from skimage.metrics import structural_similarity as ssim
+import json
+from pathlib import Path
 
 def to_gray(img_bgr):
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -63,34 +65,71 @@ def crop_with_pad(img, box, pad=24):
     x2, y2 = min(w, x+bw+pad), min(h, y+bh+pad)
     return img[y1:y2, x1:x2].copy(), (x1,y1,x2-x1,y2-y1)
 
-before = cv2.imread('image-comparator/sample_img/ui_img1.png')
-after  = cv2.imread('image-comparator/sample_img/ui_img2.png')
+def save_thumb(name, img, maxh=900):
+    h,w = img.shape[:2]
+    if h > maxh:
+        img = cv2.resize(img, (int(w*maxh/h), maxh), interpolation=cv2.INTER_AREA)
+    cv2.imwrite(str(OUT / name), img)
 
-grayB, grayA = to_gray(before), to_gray(after)
-score, diff = ssim(grayB, grayA, full=True, gaussian_weights=True, use_sample_covariance=False)
-diff = (1.0 - diff)  # make “more different” = brighter
+if __name__ == "__main__":
+    OUT = Path("image-comparator/out")
+    OUT.mkdir(parents=True, exist_ok=True)
 
-# Heatmap for visualisation
-diff_u8 = np.clip(diff*255,0,255).astype('uint8')
-th = cv2.threshold(diff_u8, 0, 255, cv2.THRESH_OTSU)[0]
-binmask = (diff_u8 >= th).astype('uint8')*255
-binmask = cv2.morphologyEx(binmask, cv2.MORPH_CLOSE, np.ones((5,5),np.uint8), iterations=2)
+    before = cv2.imread('image-comparator/sample_img/ui_img1.png')
+    after  = cv2.imread('image-comparator/sample_img/ui_img2.png')
 
-cnts = cv2.findContours(binmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-cnts = cnts[0] if len(cnts)==2 else cnts[1]
-boxes = [cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 40]
-boxes = merge_boxes(boxes, iou_thresh=0.35)
+    grayB, grayA = to_gray(before), to_gray(after)
+    score, diff = ssim(grayB, grayA, full=True, gaussian_weights=True, use_sample_covariance=False)
+    diff = (1.0 - diff)  # make “more different” = brighter
 
-triptychs = []
-for i, b in enumerate(boxes):
-    cb,_ = crop_with_pad(before, b, pad=24)
-    ca,_ = crop_with_pad(after,  b, pad=24)
-    cd,_ = crop_with_pad(cv2.applyColorMap(diff_u8, cv2.COLORMAP_JET), b, pad=24)
-    # equalise heights for neat stacking
-    target_h = 320
-    def resize_to_h(img,h=target_h):
-        h0,w0 = img.shape[:2]; return cv2.resize(img, (int(w0*h/h0), h), interpolation=cv2.INTER_AREA)
-    cb, ca, cd = map(resize_to_h, [cb, ca, cd])
-    tri = np.hstack([cb, ca, cd])
-    triptychs.append((f"chg-{i+1:03d}", b, tri))
-    cv2.imwrite(f"image-comparator/out/region_{i+1:03d}.png", tri)
+    # Heatmap for visualisation
+    diff_u8 = np.clip(diff*255,0,255).astype('uint8')
+    th = cv2.threshold(diff_u8, 0, 255, cv2.THRESH_OTSU)[0]
+    binmask = (diff_u8 >= th).astype('uint8')*255
+    binmask = cv2.morphologyEx(binmask, cv2.MORPH_CLOSE, np.ones((5,5),np.uint8), iterations=2)
+
+    cnts = cv2.findContours(binmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[0] if len(cnts)==2 else cnts[1]
+    boxes = [cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 40]
+    boxes = merge_boxes(boxes, iou_thresh=0.35)
+
+    triptychs = []
+    for i, b in enumerate(boxes):
+        cb,_ = crop_with_pad(before, b, pad=24)
+        ca,_ = crop_with_pad(after,  b, pad=24)
+        cd,_ = crop_with_pad(cv2.applyColorMap(diff_u8, cv2.COLORMAP_JET), b, pad=24)
+        # equalise heights for neat stacking
+        target_h = 320
+        def resize_to_h(img,h=target_h):
+            h0,w0 = img.shape[:2]; return cv2.resize(img, (int(w0*h/h0), h), interpolation=cv2.INTER_AREA)
+        cb, ca, cd = map(resize_to_h, [cb, ca, cd])
+        tri = np.hstack([cb, ca, cd])
+        triptychs.append((f"chg-{i+1:03d}", b, tri))
+        cv2.imwrite(f"image-comparator/out/region_{i+1:03d}.png", tri)
+
+    save_thumb("page_before.png", before)
+    save_thumb("page_after.png",  after)
+
+    # Build a manifest the model can read alongside images
+    payload = {
+    "page": {
+        "viewport": {"w": int(before.shape[1]), "h": int(before.shape[0])},
+        "before_image": "page_before.png",
+        "after_image":  "page_after.png"
+    },
+    "changes": []
+    }
+
+    for i, (chg_id, box, tri) in enumerate(triptychs, start=1):
+        fn = f"region_{i:03d}.png"
+        cv2.imwrite(str(OUT / fn), tri)
+        x,y,w,h = box
+        payload["changes"].append({
+        "id": chg_id,
+        "bbox": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)},
+        "triptych": fn
+        # (optional) add local metrics if you compute them later, e.g. local_ssim, area, saliency
+        })
+
+    with open(OUT / "manifest.json", "w") as f:
+        json.dump(payload, f, indent=2)
