@@ -1,2 +1,3 @@
 image-comparator/out/
 .DS_STORE
+.env

@@ -75,8 +75,8 @@ if __name__ == "__main__":
     OUT = Path("image-comparator/out")
     OUT.mkdir(parents=True, exist_ok=True)
 
-    before = cv2.imread('image-comparator/sample_img/ui_img1.png')
-    after  = cv2.imread('image-comparator/sample_img/ui_img2.png')
+    before = cv2.imread('image-comparator/input/before.png')
+    after  = cv2.imread('image-comparator/input/after.png')
 
     grayB, grayA = to_gray(before), to_gray(after)
     score, diff = ssim(grayB, grayA, full=True, gaussian_weights=True, use_sample_covariance=False)
